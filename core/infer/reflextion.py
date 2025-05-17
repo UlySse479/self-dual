@@ -1,0 +1,226 @@
+import argparse
+import argparse
+import os
+from datetime import datetime
+from tqdm import tqdm
+import json
+import numpy as np
+
+from core.utils.utils import strip_string
+from core.eval.grader import math_equal
+from core.utils.utils import set_seed, load_jsonl, extract_boxed_from_str
+from core.infer.infer import online_models, offline_models
+
+
+EVAL_PROMPT = """
+Please review the following solution to a math problem and provide brief feedback on its reasoning, and correctness. Keep it within 500 words.
+"""
+
+REFLECTION_PROMPT = """
+You are refining a solution to a math problem based on feedback from previous rounds. Give your final answer in `\\boxed` format.
+"""
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Basic inference script")
+    parser.add_argument(
+        "--prompt_type",
+        type=str,
+        required=True,
+        help="Type of prompt"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        help="Name of the model to use(e.g., deepseek-v3, etc.)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="Name of the dataset to use(e.g., gsm8k, etc.)",
+    )
+    parser.add_argument(
+        "--max_new_tokens",
+        type=int,
+        default=8192,
+        help="Maximum number of tokens to generate",
+    )
+    parser.add_argument(
+        "--dataset_split",
+        type=str,
+        default="test",
+        help="Split of the dataset to use(e.g., train, test, etc.)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Temperature for inference",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for reproducibility",
+    )
+    parser.add_argument(
+        "--sampled_num",
+        type=int,
+        default=-1,
+        help="Sampled number of dataset to use for inference. -1 means all samples",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=1,
+        help="Batch size for inference",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./outputs",
+        help="Directory to save the outputs",
+    )
+    parser.add_argument(
+        "--use_checkpoint",
+        action="store_true",
+        default=False,
+        help="Use checkpoint for inference(The dataset idx will be used as the checkpoint name)",
+    )
+    parser.add_argument(
+        "--nl_path",
+        type=str,
+        default=None,
+        help="The nl path for Reflextion",
+    )
+    args = parser.parse_args()
+    return args
+
+def reflextion(args):
+    # Process the model name and check if it is online or offline
+    if args.model in online_models:
+        from core.llms.online_llms import OnlineLLMs
+        llm = OnlineLLMs(
+            model=args.model,
+        )
+    elif args.model in offline_models:
+        from core.llms.offline_llms import OfflineLLMs
+        llm = OfflineLLMs(
+            model=args.model,
+        )
+    else:
+        print(f"Unknown model: {args.model}")
+        return 
+
+    try:
+        print(f"Loading dataset {args.nl_path}...")
+        nl_dataset = load_jsonl(args.nl_path)
+
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        return
+
+    if args.sampled_num > 0:
+        # Random sampling of the origin_pal dataset
+        sampled_indices = np.random.choice(len(nl_dataset), args.sampled_num, replace=False)
+        nl_dataset = [nl_dataset[i] for i in sampled_indices]
+        
+    # Initialize the output directory
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+
+    # Initialize the output file
+    output_file = os.path.join(args.output_dir, f"{args.model}/{args.dataset}/{args.dataset_split}/{args.prompt_type}_{args.sampled_num}_{args.seed}_{args.temperature}_{datetime.now().strftime('%m-%d-%H-%M')}.jsonl")
+    if not os.path.exists(os.path.dirname(output_file)):
+        os.makedirs(os.path.dirname(output_file))
+    output_writer = open(output_file, 'w', encoding='utf-8')
+
+    # Checkpoint file to store the current index
+    checkpoint_file = os.path.join(args.output_dir, f"{args.model}/{args.dataset}/{args.dataset_split}/{args.prompt_type}_{args.sampled_num}_{args.seed}_{args.temperature}_checkpoint.json")
+    if not os.path.exists(os.path.dirname(checkpoint_file)):
+            os.makedirs(os.path.dirname(checkpoint_file))
+    # Load checkpoint if use_checkpoint is True
+    start_index = 0
+    # Generate the output using the LLM of args.batch_size
+    num_correct = 0
+    total_res_tokens = 0
+    if args.use_checkpoint and os.path.exists(checkpoint_file) and args.sampled_num == -1:
+        with open(checkpoint_file, 'r', encoding='utf-8') as f:
+            checkpoint_data = json.load(f)
+            start_index = checkpoint_data.get("index", 0)
+            num_correct = checkpoint_data.get("num_correct", 0)
+            total_res_tokens = checkpoint_data.get("total_res_tokens", 0)
+        print(f"Resuming from checkpoint at index {start_index}...")
+
+    with tqdm(total=len(nl_dataset), initial=start_index) as pbar:
+        for i in range(start_index, len(nl_dataset), args.batch_size):
+            nl_batch = nl_dataset[i:i + args.batch_size]
+            prompts = []
+            nl_solutions = []
+            for nl in nl_batch:
+                question = nl['question']
+                nl_pred_solution = nl['pred_solution']
+                prompts.append(
+                    f"{EVAL_PROMPT}\nQuestion: {question}\nSolution: {nl_pred_solution}\n"
+                )
+                nl_solutions.append(nl_pred_solution)
+            feedbacks = llm.completion_batch(
+                prompts,
+                temperature=args.temperature,
+                max_tokens=512,
+                stop_tokens=["Question:", "---"] if "gemma" in args.model else None,
+            )
+            print("Feebacks Done...")
+            prompts_tra = [
+                f"{REFLECTION_PROMPT}\nQuestion: {nl['question']}\nSolution: {nl_pred_solution}\nFeedback: {feedback.response}\nRevison:\n"
+                for nl, feedback, nl_pred_solution in zip(nl_batch, feedbacks, nl_solutions)
+            ]
+            responses = llm.completion_batch(
+                prompts_tra,
+                temperature=args.temperature,
+                max_tokens=args.max_new_tokens,
+                stop_tokens=["Question:", "---"] if "gemma" in args.model else None,
+            )
+            print("Reflextion Done...")
+            for j, response in enumerate(responses):
+                o_tokens = 0
+                pred = extract_boxed_from_str(response.response)
+                is_correct = math_equal(strip_string(pred), strip_string(nl_batch[j]['ground_truth']))
+                num_correct += is_correct
+                o_tokens += feedbacks[j].response_tokens + response.response_tokens
+                total_res_tokens += o_tokens
+                output = {
+                    "question": nl_batch[j]['question'],
+                    "ground_truth": nl_batch[j]['ground_truth'],
+                    "nl_pred_solution": nl_solutions[j],
+                    "revision_solution": response.response,
+                    "pred": pred,
+                    "is_correct": is_correct,
+                    "prompt_tokens": feedbacks[j].prompt_tokens + response.prompt_tokens,
+                    "response_tokens": o_tokens,
+                }
+                output_writer.write(json.dumps(output) + '\n')
+                print(f"idx: {i+j}, is_correct: {is_correct}, accuracy: {num_correct / (i+j+1):.4f}, o_tokens: {o_tokens}, o_tokens/Q: {total_res_tokens / (i+j+1):.4f}")
+                # Save checkpoint after processing each batch
+                if args.use_checkpoint and args.sampled_num == -1:
+                    with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                        json.dump(
+                            {
+                                "index": i + j + 1, 
+                                "num_correct": num_correct,
+                                "accuracy": round(num_correct / (i+j+1), 4), 
+                                "total_res_tokens": total_res_tokens,
+                                "output_tokens/Q": round(total_res_tokens / (i+j+1), 4)
+                            },
+                            f)
+            output_writer.flush()
+            pbar.update(args.batch_size)
+        
+        output_writer.close()
+
+if __name__ == '__main__':
+    args = parse_args()
+    set_seed(args.seed)
+    reflextion(args)
