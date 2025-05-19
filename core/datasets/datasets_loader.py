@@ -167,25 +167,11 @@ def load_format_test_datasets(dataset_name:str="gsm8k", split:str="test") -> Dat
             )
         except Exception as e:
             print(f"Error loading dataset from datasets library: {e}")
-    elif dataset_name == "aime24":
-        try:
-            dataset = dataset_loader.load_dataset(
-                dataset_name='Maxwell-Jia/AIME_2024',
-                split='train',
-                dataset_key_map=
-                    {
-                        "question": "Problem",
-                        "solution": "Solution",
-                        "answer": "Answer",
-                    }
-            )
-        except Exception as e:
-            print(f"Error loading dataset from datasets library: {e}")
     else:
         print(f"Unknown dataset: {dataset_name}")
 
     return dataset
 
 if __name__ == '__main__':
-    dataset = load_format_test_datasets("aime24")
+    dataset = load_format_test_datasets("aime")
     print(dataset.select(range(10))[7])
