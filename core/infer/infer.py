@@ -180,7 +180,8 @@ def infer(args):
                     "prompt_tokens": infer_result.response.prompt_tokens,
                     "response_tokens": infer_result.response.response_tokens,
                     "pred_solution": infer_result.response.response,
-                    "solution": batch['solution'][j] if args.dataset != 'svamp' and args.dataset != 'aime' else None,
+                    "solution": batch['solution'][j] if args.dataset == 'svamp' and args.dataset != 'aime' and 
+                                                        args.dataset != 'minervamath' and args.dataset != 'amc23' else None,
                 }
                 output_writer.write(json.dumps(output) + '\n')
                 total_res_tokens += infer_result.response.response_tokens

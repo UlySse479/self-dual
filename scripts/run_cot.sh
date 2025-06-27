@@ -1,5 +1,5 @@
 #!/bin/bash
-datasets=("math-500" "aime" "gsm8k" "svamp")
+datasets=("minervamath" "aime2024" "amc23")
 
 for dataset in "${datasets[@]}"; do
     python -m core.infer.infer \

@@ -38,10 +38,13 @@ def extract_last_code_block(text: str) -> str:
     last_match = max(matches, key=lambda m: m.end())
     return last_match.group(1).strip()
 
-def load_prompt( prompt_type: str, dataset_name: str) -> str:
+def load_prompt(prompt_type: str, dataset_name: str) -> str:
     """
     Load a prompt from a file.
     """
+    # Use AIME prompts
+    if dataset_name in ["minervamath", "aime2024", "amc23"]:
+        dataset_name = "aime"
     # Define the path to the prompts directory
     prompts_dir = Path(__file__).parent.parent.parent / "prompts" / dataset_name
     

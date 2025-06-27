@@ -167,11 +167,29 @@ def load_format_test_datasets(dataset_name:str="gsm8k", split:str="test") -> Dat
             )
         except Exception as e:
             print(f"Error loading dataset from datasets library: {e}")
+    elif dataset_name == "minervamath":
+        dataset = dataset_loader.load_dataset(
+            dataset_name='math-ai/minervamath',
+            split=split,
+        )
+    elif dataset_name == 'aime2024':
+        dataset = dataset_loader.load_dataset(
+            dataset_name='HuggingFaceH4/aime_2024',
+            split="train",
+            dataset_key_map={
+                "question": "problem",
+            }
+        )
+    elif dataset_name == 'amc23':
+        dataset = dataset_loader.load_dataset(
+            dataset_name='math-ai/amc23',
+            split=split,
+        )
     else:
         print(f"Unknown dataset: {dataset_name}")
 
     return dataset
 
 if __name__ == '__main__':
-    dataset = load_format_test_datasets("aime")
+    dataset = load_format_test_datasets("amc23")
     print(dataset.select(range(10))[7])
